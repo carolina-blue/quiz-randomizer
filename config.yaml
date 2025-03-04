@@ -1,0 +1,47 @@
+# Quiz Randomizer Configuration
+
+# GUI Settings
+gui:
+  window_width: 600
+  window_height: 500
+  title: "Quiz Randomizer"
+
+# Default Quiz Settings
+quiz_defaults:
+  num_quizzes: 5
+  questions_per_quiz: 10
+  allow_duplicates: false
+  output_format: "docx"
+  output_directory: "quizzes"
+
+# Document Formatting
+formatting:
+  pdf:
+    title_font: "Arial"
+    title_size: 16
+    body_font: "Arial"
+    body_size: 12
+    feedback_size: 10
+    margins:
+      top: 20
+      bottom: 20
+      left: 20
+      right: 20
+  docx:
+    title_size: 16
+    option_indent: 20
+    feedback_indent: 20
+
+# File Types
+file_types:
+  - name: "Text Files"
+    extensions: [".txt"]
+  - name: "Word Documents"
+    extensions: [".docx"]
+  - name: "Rich Text Format"
+    extensions: [".rtf"]
+  - name: "All Files"
+    extensions: [".*"]
+
+# Recent Files
+recent_files: [] 

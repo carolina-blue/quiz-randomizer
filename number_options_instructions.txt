@@ -1,0 +1,27 @@
+# How to Add Support for Numbered Options in Quiz Randomizer
+
+The quiz_randomizer.py needs to be updated to support numbered options (like "1. Option", "2. Option").
+This requires two changes:
+
+## Step 1: Update the DOCX File Loading Method
+Replace the entire "_load_from_docx" method in the QuestionBank class with the content from "fixed_quiz_randomizer.txt".
+
+Steps:
+1. Open quiz_randomizer.py in your editor
+2. Find the method starting with "def _load_from_docx(self, filename: str) -> None:"
+3. Replace that entire method with the code from fixed_quiz_randomizer.txt
+
+## Step 2: Update the Text File Processing
+Find the section in the "load_from_file" method that starts with "# Check for multiple choice format"
+and replace it with the code from txt_file_loader.txt.
+
+After these changes, the quiz randomizer will be able to process both:
+- Letter-style options (a), b), c), etc.)
+- Number-style options (1., 2., 3., etc.)
+
+## Testing Your Changes
+Use the test files in the "quizzes" directory:
+- mixed_format_test.docx - Contains both letter and number formatted options
+- numbered_test.txt - Contains number formatted options
+
+Load these test files with the updated quiz_randomizer.py to verify that both formats are handled correctly.

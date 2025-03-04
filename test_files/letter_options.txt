@@ -1,0 +1,13 @@
+What is the capital of Italy?
+a) Madrid
+b) Berlin
+c) **Rome**
+d) Athens
+Answer Feedback: Rome is the capital of Italy
+
+Which planet is the largest in our solar system?
+a) Earth
+b) **Jupiter**
+c) Mars
+d) Saturn
+Answer Feedback: Jupiter is the largest planet

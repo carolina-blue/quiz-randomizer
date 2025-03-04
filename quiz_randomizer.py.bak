@@ -1,0 +1,764 @@
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import os
+import sys
+import random
+import re
+from fpdf import FPDF
+from typing import List, Dict, Set, Tuple
+import unicodedata
+import docx
+from docx.shared import Pt
+from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+import docx2txt
+from striprtf.striprtf import rtf_to_text
+from bold_formatter import create_quiz_from_docx
+
+# Custom FPDF class with UTF-8 support
+class UTF8PDF(FPDF):
+    def __init__(self):
+        super().__init__()
+        # Set up the default font that supports extended characters
+        self.add_font('DejaVu', '', 'DejaVuSansCondensed.ttf', uni=True)
+        self.add_font('DejaVu', 'B', 'DejaVuSansCondensed-Bold.ttf', uni=True)
+    
+    def sanitize_text(self, text):
+        """Sanitize text to avoid encoding issues"""
+        # Replace any problematic characters or convert to ASCII equivalent
+        if isinstance(text, str):
+            # ASCII-only approximation (removes accents but keeps base letters)
+            text = unicodedata.normalize('NFKD', text)
+            text = ''.join([c for c in text if not unicodedata.combining(c)])
+            # Remove any remaining non-ASCII characters
+            text = text.encode('ascii', 'replace').decode('ascii')
+        return text
+
+
+class Question:
+    """Class to represent a quiz question with its text and options."""
+    
+    def __init__(self, text: str, question_type: str = "unknown", options: List[str] = None, feedback: str = None):
+        self.text = text.strip()
+        self.question_type = question_type  # "multiple-choice", "true-false", or "free-response"
+        self.options = options or []
+        self.feedback = feedback  # Store answer feedback
+        self.id = hash(self.text)  # Simple way to identify unique questions
+        
+        # Track which option is correct (for preserving order)
+        self.correct_option_index = -1
+        for i, option in enumerate(self.options):
+            if "**" in option:
+                self.correct_option_index = i
+                break
+    
+    def __str__(self) -> str:
+        result = self.text
+        if self.options:
+            for i, option in enumerate(self.options):
+                result += f"\n{chr(97 + i)}) {option}"
+        if self.feedback:
+            result += f"\n{self.feedback}"
+        return result
+
+
+class QuestionBank:
+    """Class to manage a collection of questions."""
+    
+    def __init__(self):
+        self.questions: List[Question] = []
+    
+    def add_question(self, question: Question) -> None:
+        """Add a question to the bank."""
+        self.questions.append(question)
+    
+    def get_size(self) -> int:
+        """Get the number of questions in the bank."""
+        return len(self.questions)
+    
+    def load_from_file(self, filename: str) -> None:
+        """Load questions from a file (supports .txt, .docx, and .rtf)."""
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f"Question bank file {filename} not found")
+        
+        # Determine file type and extract content accordingly
+        file_extension = os.path.splitext(filename)[1].lower()
+        
+        if file_extension == '.docx':
+            # For DOCX files, we'll use a specialized approach to preserve formatting
+            self._load_from_docx(filename)
+            return
+        
+        elif file_extension == '.rtf':
+            # Extract text from RTF file
+            with open(filename, 'r', encoding='utf-8', errors='ignore') as file:
+                rtf_content = file.read()
+            content = rtf_to_text(rtf_content)
+            # Note: striprtf doesn't preserve formatting like bold
+            # We would need a more sophisticated RTF parser for that
+        
+        else:  # Default to txt
+            with open(filename, 'r', encoding='utf-8') as file:
+                content = file.read()
+        
+        # Process text-based content (TXT or RTF)
+        # Split content into individual questions
+        question_blocks = re.split(r'\n\s*\n', content)
+        
+        for block in question_blocks:
+            if not block.strip():
+                continue
+            
+            lines = block.strip().split('\n')
+            if not lines:  # Skip empty blocks
+                continue
+                
+            question_text = lines[0]
+            
+            # Try to determine question type
+            question_type = "free-response"  # Default
+            options = []
+            feedback = None
+            
+            # Check for answer feedback
+            feedback_pattern = re.compile(r'^Answer\s+Feedback:\s+.+')
+            feedback_lines = [line for line in lines if feedback_pattern.match(line)]
+            if feedback_lines:
+                feedback = feedback_lines[0]
+                # Remove feedback line from lines to process
+                lines = [line for line in lines if not feedback_pattern.match(line)]
+            
+            # Check for multiple choice format - support both letter (a), b)) and numbered formats (1., 2.)
+            letter_option_pattern = re.compile(r'^[a-z]\)\s+.+')
+            number_option_pattern = re.compile(r'^\d+\.\s+.+')
+            
+            has_letter_options = any(letter_option_pattern.match(line) for line in lines[1:])
+            has_number_options = any(number_option_pattern.match(line) for line in lines[1:])
+            has_options = has_letter_options or has_number_options
+            
+            if has_options:
+                question_type = "multiple-choice"
+                options = []
+                for line in lines[1:]:
+                    # Check for letter-style options (a), b), etc.)
+                    if letter_option_pattern.match(line):
+                        options.append(line)
+                    # Check for number-style options (1., 2., etc.)
+                    elif number_option_pattern.match(line):
+                        # Convert numbered format to letter format for consistency
+                        number_match = re.match(r'^(\d+)\.\s+(.+)$', line)
+                        if number_match:
+                            number = int(number_match.group(1))
+                            option_text = number_match.group(2)
+                            # Convert to letter format (1 -> a, 2 -> b, etc.)
+                            letter = chr(96 + number) if 1 <= number <= 26 else chr(96 + (number % 26))
+                            converted_option = f"{letter}) {option_text}"
+                            options.append(converted_option)
+                
+            # Check for true/false
+            elif any(re.search(r'true\s*\/\s*false', line.lower()) for line in lines):
+                question_type = "true-false"
+                options = ["True", "False"]
+            
+            self.add_question(Question(question_text, question_type, options, feedback))
+    
+    def _load_from_docx(self, filename: str) -> None:
+        """Load questions from a DOCX file, preserving formatting."""
+        doc = docx.Document(filename)
+        
+        # We'll process paragraphs sequentially
+        current_question = None
+        current_options = []
+        current_feedback = None
+        
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if not text:
+                # Empty paragraph means end of current question
+                if current_question:
+                    question_type = "free-response"
+                    if current_options:
+                        question_type = "multiple-choice"
+                    elif current_question.lower().find("true/false") > -1:
+                        question_type = "true-false"
+                        current_options = ["True", "False"]
+                    
+                    self.add_question(Question(current_question, question_type, current_options, current_feedback))
+                    current_question = None
+                    current_options = []
+                    current_feedback = None
+            elif text.startswith("Answer Feedback:"):
+                # This is feedback for the current question
+                current_feedback = text
+            # Check for letter-style options (a), b), etc.)
+            elif any(text.startswith(f"{chr(97 + i)})") for i in range(26)):
+                # This is an option - check for bold parts
+                option_text = text
+                
+                # Explicitly check each run for bold property
+                has_bold = False
+                bold_part = ""
+                
+                for run in para.runs:
+                    if run.bold is True:  # Must explicitly check against True
+                        has_bold = True
+                        bold_part = run.text
+                        # Mark the bold part with markdown
+                        option_text = option_text.replace(bold_part, f"**{bold_part}**")
+                        break
+                
+                # If we didn't find any bold runs but a partial option is bold
+                if not has_bold:
+                    # Check for split formatting in letter+content
+                    letter_match = re.match(r'^([a-z]\))\s+(.+)$', text)
+                    if letter_match:
+                        letter = letter_match.group(1)
+                        content = letter_match.group(2)
+                        
+                        # Many Word documents have only the content (not the letter) bold
+                        for run in para.runs:
+                            if run.bold and content in run.text:
+                                option_text = f"{letter} **{content}**"
+                                break
+                
+                current_options.append(option_text)
+            # Check for number-style options (1., 2., etc.)
+            elif re.match(r'^\d+\.\s+.+', text):
+                # Convert numbered format to letter format
+                number_match = re.match(r'^(\d+)\.\s+(.+)$', text)
+                if number_match:
+                    number = int(number_match.group(1))
+                    content = number_match.group(2)
+                    
+                    # Convert to letter format (1 -> a, 2 -> b, etc.)
+                    letter = chr(96 + number) if 1 <= number <= 26 else chr(96 + (number % 26))
+                    letter_prefix = f"{letter}) "
+                    
+                    # Check for bold formatting
+                    has_bold = False
+                    for run in para.runs:
+                        if run.bold is True:
+                            has_bold = True
+                            # Mark content as bold
+                            option_text = f"{letter_prefix}**{content}**"
+                            break
+                    
+                    # If no bold parts found, use plain formatting
+                    if not has_bold:
+                        option_text = f"{letter_prefix}{content}"
+                    
+                    current_options.append(option_text)
+            elif not current_question:
+                # This must be a new question text
+                current_question = text
+        
+        # Add the last question if there is one
+        if current_question:
+            question_type = "free-response"
+            if current_options:
+                question_type = "multiple-choice"
+            elif current_question.lower().find("true/false") > -1:
+                question_type = "true-false"
+                current_options = ["True", "False"]
+            
+            self.add_question(Question(current_question, question_type, current_options, current_feedback))
+
+
+class Quiz:
+    """Class to represent a quiz with questions and metadata."""
+    
+    def __init__(self, title: str, questions: List[Question] = None):
+        self.title = title
+        self.questions = questions or []
+    
+    def add_question(self, question: Question) -> None:
+        """Add a question to the quiz."""
+        self.questions.append(question)
+    
+    def get_question_count(self) -> int:
+        """Get the number of questions in the quiz."""
+        return len(self.questions)
+    
+    def __str__(self) -> str:
+        """String representation of the quiz for text output."""
+        result = f"{self.title}\n\n"
+        for i, question in enumerate(self.questions, 1):
+            result += f"{i}. {question}\n\n"
+        return result
+    
+    def to_docx(self, filename: str) -> None:
+        """Export the quiz to a DOCX file that preserves formatting."""
+        # Create a temporary DOCX file with the questions
+        temp_filename = "_temp_quiz.docx"
+        doc = docx.Document()
+        
+        # Add each question with its options and feedback
+        for question in self.questions:
+            # Add the question text
+            doc.add_paragraph(question.text)
+            
+            # Add the options
+            for option in question.options:
+                # If option includes markdown style bold (**text**), we need to handle it
+                bold_pattern = re.compile(r'\*\*(.+?)\*\*')
+                bold_match = bold_pattern.search(option)
+                
+                if bold_match:
+                    # Prepare parts (before bold, bold part, after bold)
+                    letter_part = option.split(')', 1)[0] + ')'
+                    content_with_markup = option.split(')', 1)[1].strip()
+                    
+                    before_bold = content_with_markup[:bold_match.start()]
+                    bold_text = bold_match.group(1)  # Text inside ** **
+                    after_bold = content_with_markup[bold_match.end():]
+                    
+                    # Create a paragraph with mixed formatting
+                    p = doc.add_paragraph()
+                    p.add_run(letter_part + ' ' + before_bold)
+                    
+                    # Add the bold part
+                    bold_run = p.add_run(bold_text)
+                    bold_run.bold = True
+                    
+                    # Add the text after bold
+                    p.add_run(after_bold)
+                else:
+                    # Regular option without markdown bold
+                    doc.add_paragraph(option)
+            
+            # Add the feedback if it exists
+            if question.feedback:
+                doc.add_paragraph(question.feedback)
+            
+            # Add a blank line between questions
+            doc.add_paragraph()
+        
+        doc.save(temp_filename)
+        
+        # Use our specialized function to properly format the output
+        create_quiz_from_docx(
+            input_file=temp_filename,
+            output_file=filename,
+            title=self.title
+        )
+        
+        # Clean up the temporary file
+        try:
+            os.remove(temp_filename)
+        except:
+            pass
+    
+    def to_pdf(self, filename: str) -> None:
+        """Export the quiz to a PDF file with safe encoding."""
+        try:
+            # First attempt - use standard FPDF with sanitization
+            pdf = FPDF()
+            pdf.add_page()
+            
+            # Set up fonts
+            pdf.set_font("Arial", "B", 16)
+            
+            # Add title (sanitize to avoid encoding issues)
+            title = self.title.encode('ascii', 'replace').decode('ascii')
+            pdf.cell(0, 10, title, 0, 1, "C")
+            pdf.ln(10)
+            
+            # Add questions
+            pdf.set_font("Arial", "", 12)
+            for i, question in enumerate(self.questions, 1):
+                # Add question number and text
+                pdf.set_font("Arial", "B", 12)
+                question_num = f"{i}. "
+                pdf.cell(10, 10, question_num)
+                
+                pdf.set_font("Arial", "", 12)
+                # Handle multiline question text
+                lines = question.text.split('\n')
+                # Sanitize text to avoid encoding issues
+                safe_line = lines[0].encode('ascii', 'replace').decode('ascii')
+                pdf.multi_cell(0, 10, safe_line)
+                for line in lines[1:]:
+                    pdf.set_x(20)  # Indent continuation lines
+                    safe_line = line.encode('ascii', 'replace').decode('ascii')
+                    pdf.multi_cell(0, 10, safe_line)
+                
+                # Add options if they exist
+                if question.options:
+                    pdf.ln(5)
+                    for j, option in enumerate(question.options):
+                        pdf.set_x(20)  # Indent options
+                        
+                        # Check if this option has bold text (markdown format)
+                        bold_pattern = re.compile(r'\*\*(.+?)\*\*')
+                        bold_match = bold_pattern.search(option)
+                        
+                        # Process option text to handle bold formatting
+                        if bold_match:
+                            # Replace markdown bold with actual bold formatting in PDF
+                            before_bold = option[:bold_match.start()]
+                            bold_text = bold_match.group(1)  # Text inside ** **
+                            after_bold = option[bold_match.end():]
+                            
+                            # Sanitize all parts
+                            safe_before = before_bold.encode('ascii', 'replace').decode('ascii')
+                            safe_bold = bold_text.encode('ascii', 'replace').decode('ascii')
+                            safe_after = after_bold.encode('ascii', 'replace').decode('ascii')
+                            
+                            # Create the option text with letter
+                            option_letter = f"{chr(97 + j)}) "
+                            pdf.set_x(20)
+                            pdf.write(8, option_letter + safe_before)
+                            
+                            # Switch to bold for the correct answer
+                            pdf.set_font("Arial", "B", 12)
+                            pdf.write(8, safe_bold)
+                            
+                            # Switch back to normal font
+                            pdf.set_font("Arial", "", 12)
+                            pdf.write(8, safe_after)
+                            pdf.ln()
+                        else:
+                            # Regular option without bold
+                            safe_option = option.encode('ascii', 'replace').decode('ascii')
+                            option_text = f"{chr(97 + j)}) {safe_option}"
+                            pdf.multi_cell(0, 8, option_text)
+                
+                # Add answer feedback if it exists
+                if question.feedback:
+                    pdf.ln(5)
+                    pdf.set_x(20)
+                    pdf.set_font("Arial", "I", 10)  # Italics for feedback
+                    safe_feedback = question.feedback.encode('ascii', 'replace').decode('ascii')
+                    pdf.multi_cell(0, 8, safe_feedback)
+                    pdf.set_font("Arial", "", 12)  # Reset font
+                
+                pdf.ln(10)
+            
+            # Save the file
+            pdf.output(filename)
+        
+        except Exception as e:
+            # Fallback to text output if PDF generation fails
+            print(f"PDF generation failed: {str(e)}")
+            text_filename = filename.replace('.pdf', '.txt')
+            with open(text_filename, 'w', encoding='utf-8') as f:
+                f.write(str(self))
+            raise ValueError(f"Could not generate PDF due to encoding issues. Created text file instead: {text_filename}")
+
+
+class QuizRandomizer:
+    """Main class to generate randomized quizzes from a question bank."""
+    
+    def __init__(self, question_bank: QuestionBank):
+        self.question_bank = question_bank
+    
+    def create_quizzes(
+        self, 
+        num_quizzes: int, 
+        questions_per_quiz: int, 
+        allow_duplicates: bool = False,
+        output_format: str = "pdf",
+        output_dir: str = "quizzes"
+    ) -> Tuple[List[Quiz], Dict]:
+        """
+        Create multiple quizzes with randomized questions.
+        
+        Args:
+            num_quizzes: Number of quizzes to create
+            questions_per_quiz: Number of questions per quiz
+            allow_duplicates: If True, same question can appear in multiple quizzes
+            output_format: Format to output quizzes ("text", "pdf")
+            output_dir: Directory to save output files
+            
+        Returns:
+            Tuple containing list of Quiz objects and metadata dictionary
+        """
+        total_questions_needed = num_quizzes * questions_per_quiz
+        bank_size = self.question_bank.get_size()
+        
+        # Validate that we have enough unique questions if duplicates aren't allowed
+        if not allow_duplicates and total_questions_needed > bank_size:
+            raise ValueError(
+                f"Not enough unique questions. Requested {total_questions_needed} but only have {bank_size}. "
+                f"Either reduce the number of quizzes/questions per quiz or allow duplicates."
+            )
+        
+        # Create quizzes
+        quizzes = []
+        metadata = {
+            "num_quizzes": num_quizzes,
+            "questions_per_quiz": questions_per_quiz,
+            "total_questions_used": 0,
+            "quizzes_with_extra_questions": [],
+            "duplicate_stats": {}
+        }
+        
+        # Determine distribution of questions
+        if allow_duplicates:
+            # Simple case: we just randomly select with replacement for each quiz
+            for i in range(num_quizzes):
+                quiz = Quiz(f"Quiz {i+1}")
+                selected_questions = random.choices(self.question_bank.questions, k=questions_per_quiz)
+                
+                for question in selected_questions:
+                    # Create a deep copy to avoid modifying the original
+                    quiz.add_question(question)
+                
+                quizzes.append(quiz)
+                
+            # Track duplicates for metadata
+            question_usage = {}
+            for quiz in quizzes:
+                for question in quiz.questions:
+                    if question.id not in question_usage:
+                        question_usage[question.id] = 0
+                    question_usage[question.id] += 1
+            
+            for question_id, count in question_usage.items():
+                if count > 1:
+                    metadata["duplicate_stats"][question_id] = count
+            
+            metadata["total_questions_used"] = len(question_usage)
+                
+        else:
+            # No duplicates allowed - distribute questions evenly
+            all_questions = self.question_bank.questions.copy()
+            random.shuffle(all_questions)
+            
+            # Base distribution - how many questions each quiz gets
+            base_questions_per_quiz = bank_size // num_quizzes
+            
+            # How many quizzes get an extra question
+            extra_questions = bank_size % num_quizzes
+            
+            # Assign questions to quizzes
+            question_index = 0
+            for i in range(num_quizzes):
+                quiz = Quiz(f"Quiz {i+1}")
+                
+                # Determine if this quiz gets an extra question
+                quiz_question_count = base_questions_per_quiz
+                if i < extra_questions:
+                    quiz_question_count += 1
+                    metadata["quizzes_with_extra_questions"].append(i+1)
+                
+                # Assign questions to this quiz
+                for _ in range(quiz_question_count):
+                    if question_index < len(all_questions):
+                        quiz.add_question(all_questions[question_index])
+                        question_index += 1
+                
+                quizzes.append(quiz)
+            
+            metadata["total_questions_used"] = bank_size
+        
+        # Create output directory if it doesn't exist
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        # Export quizzes to the specified format
+        for i, quiz in enumerate(quizzes):
+            try:
+                if output_format == "pdf":
+                    quiz.to_pdf(os.path.join(output_dir, f"quiz_{i+1}.pdf"))
+                elif output_format == "docx":
+                    quiz.to_docx(os.path.join(output_dir, f"quiz_{i+1}.docx"))
+                else:  # default to text
+                    with open(os.path.join(output_dir, f"quiz_{i+1}.txt"), 'w', encoding='utf-8') as f:
+                        f.write(str(quiz))
+            except Exception as e:
+                # If preferred format fails, fall back to text format
+                with open(os.path.join(output_dir, f"quiz_{i+1}.txt"), 'w', encoding='utf-8') as f:
+                    f.write(str(quiz))
+                print(f"Warning: Exported quiz {i+1} as text due to issues: {str(e)}")
+        
+        return quizzes, metadata
+
+
+class SimpleQuizRandomizerGUI:
+    """A simplified GUI for the Quiz Randomizer with no threading."""
+    
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Quiz Randomizer")
+        self.root.geometry("600x500")
+        
+        self.question_bank = None
+        self.create_widgets()
+    
+    def create_widgets(self):
+        # Main frame
+        main_frame = ttk.Frame(self.root, padding=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # File selection
+        file_frame = ttk.LabelFrame(main_frame, text="Question Bank")
+        file_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        self.file_var = tk.StringVar()
+        file_entry = ttk.Entry(file_frame, textvariable=self.file_var, width=50)
+        file_entry.grid(row=0, column=0, padx=5, pady=5)
+        
+        browse_btn = ttk.Button(file_frame, text="Browse...", command=self.browse_file)
+        browse_btn.grid(row=0, column=1, padx=5, pady=5)
+        
+        load_btn = ttk.Button(file_frame, text="Load Questions", command=self.load_questions)
+        load_btn.grid(row=1, column=0, columnspan=2, pady=5)
+        
+        self.status_var = tk.StringVar(value="No question bank loaded")
+        status_label = ttk.Label(file_frame, textvariable=self.status_var)
+        status_label.grid(row=2, column=0, columnspan=2, pady=5, sticky="w")
+        
+        # Quiz options
+        options_frame = ttk.LabelFrame(main_frame, text="Quiz Options")
+        options_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Number of quizzes
+        ttk.Label(options_frame, text="Number of quizzes:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        self.num_quizzes_var = tk.IntVar(value=5)
+        ttk.Spinbox(options_frame, from_=1, to=100, textvariable=self.num_quizzes_var, width=5).grid(row=0, column=1, padx=5, pady=5)
+        
+        # Questions per quiz
+        ttk.Label(options_frame, text="Questions per quiz:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
+        self.questions_per_quiz_var = tk.IntVar(value=10)
+        ttk.Spinbox(options_frame, from_=1, to=100, textvariable=self.questions_per_quiz_var, width=5).grid(row=1, column=1, padx=5, pady=5)
+        
+        # Output format
+        ttk.Label(options_frame, text="Output format:").grid(row=0, column=2, sticky="w", padx=5, pady=5)
+        self.format_var = tk.StringVar(value="docx")  # Default to DOCX for rich formatting 
+        format_combo = ttk.Combobox(options_frame, textvariable=self.format_var, values=["docx", "pdf", "text"], width=8, state="readonly")
+        format_combo.grid(row=0, column=3, padx=5, pady=5)
+        
+        # Output directory
+        ttk.Label(options_frame, text="Output directory:").grid(row=1, column=2, sticky="w", padx=5, pady=5)
+        self.output_dir_var = tk.StringVar(value="quizzes")
+        ttk.Entry(options_frame, textvariable=self.output_dir_var, width=10).grid(row=1, column=3, padx=5, pady=5)
+        
+        # Allow duplicates
+        self.allow_duplicates_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            options_frame, 
+            text="Allow duplicates across quizzes",
+            variable=self.allow_duplicates_var
+        ).grid(row=2, column=0, columnspan=4, sticky="w", padx=5, pady=5)
+        
+        # Generate button
+        generate_btn = ttk.Button(main_frame, text="Generate Quizzes", command=self.generate_quizzes)
+        generate_btn.pack(pady=10)
+        
+        # Log area
+        log_frame = ttk.LabelFrame(main_frame, text="Log")
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        self.log_text = tk.Text(log_frame, height=10, width=70)
+        self.log_text.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        
+        scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
+        scrollbar.pack(fill=tk.Y, side=tk.RIGHT)
+        self.log_text.config(yscrollcommand=scrollbar.set)
+    
+    def browse_file(self):
+        filename = filedialog.askopenfilename(
+            title="Select Question Bank File",
+            filetypes=[
+                ("Text Files", "*.txt"),
+                ("Word Documents", "*.docx"),
+                ("Rich Text Format", "*.rtf"),
+                ("All Files", "*.*")
+            ]
+        )
+        if filename:
+            self.file_var.set(filename)
+    
+    def log_message(self, message):
+        self.log_text.insert(tk.END, message + "\n")
+        self.log_text.see(tk.END)
+    
+    def load_questions(self):
+        filename = self.file_var.get()
+        if not filename:
+            messagebox.showerror("Error", "Please select a file first.")
+            return
+        
+        try:
+            # Show that we're loading
+            self.status_var.set("Loading questions...")
+            self.root.update_idletasks()
+            
+            # Load the questions
+            self.question_bank = QuestionBank()
+            self.question_bank.load_from_file(filename)
+            
+            # Update status
+            question_count = self.question_bank.get_size()
+            self.status_var.set(f"Loaded {question_count} questions")
+            self.log_message(f"Successfully loaded {question_count} questions from {filename}")
+        
+        except Exception as e:
+            self.status_var.set("Error loading questions")
+            messagebox.showerror("Error", f"Failed to load questions: {str(e)}")
+            self.log_message(f"Error: {str(e)}")
+    
+    def generate_quizzes(self):
+        if not self.question_bank:
+            messagebox.showerror("Error", "Please load a question bank first.")
+            return
+        
+        try:
+            # Get parameters
+            num_quizzes = self.num_quizzes_var.get()
+            questions_per_quiz = self.questions_per_quiz_var.get()
+            allow_duplicates = self.allow_duplicates_var.get()
+            output_format = self.format_var.get()
+            output_dir = self.output_dir_var.get()
+            
+            # Generate quizzes
+            self.log_message(f"Generating {num_quizzes} quizzes with {questions_per_quiz} questions each...")
+            self.root.update_idletasks()
+            
+            randomizer = QuizRandomizer(self.question_bank)
+            quizzes, metadata = randomizer.create_quizzes(
+                num_quizzes,
+                questions_per_quiz,
+                allow_duplicates,
+                output_format,
+                output_dir
+            )
+            
+            # Log results
+            result_message = (
+                f"\nQuiz Generation Summary:\n"
+                f"------------------------\n"
+                f"Number of quizzes: {metadata['num_quizzes']}\n"
+                f"Questions per quiz: {metadata['questions_per_quiz']}\n"
+                f"Total unique questions used: {metadata['total_questions_used']}\n"
+            )
+            
+            if metadata.get("quizzes_with_extra_questions"):
+                extra = ", ".join(map(str, metadata["quizzes_with_extra_questions"]))
+                result_message += f"Quizzes with extra questions: {extra}\n"
+            
+            if metadata.get("duplicate_stats"):
+                result_message += f"Questions used in multiple quizzes: {len(metadata['duplicate_stats'])}\n"
+            
+            result_message += f"\nQuizzes saved to the '{output_dir}' directory"
+            
+            self.log_message(result_message)
+            
+            if output_format == "pdf":
+                self.log_message("\nNote: If PDF generation failed due to encoding issues, text files were created instead.")
+                
+            messagebox.showinfo("Success", f"Successfully generated {num_quizzes} quizzes\!")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to generate quizzes: {str(e)}")
+            self.log_message(f"Error: {str(e)}")
+
+
+def main():
+    root = tk.Tk()
+    app = SimpleQuizRandomizerGUI(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
