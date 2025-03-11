@@ -656,36 +656,32 @@ class QuizRandomizer:
             metadata["total_questions_used"] = len(question_usage)
                 
         else:
-            # No duplicates allowed - distribute questions evenly
+            # No duplicates allowed - select a subset of questions for all quizzes
             all_questions = self.question_bank.questions.copy()
             random.shuffle(all_questions)
             
-            # Base distribution - how many questions each quiz gets
-            base_questions_per_quiz = bank_size // num_quizzes
+            # Select only the number of questions needed (num_quizzes * questions_per_quiz)
+            # or all questions if there aren't enough
+            selected_questions = all_questions[:min(total_questions_needed, bank_size)]
+            metadata["total_questions_used"] = len(selected_questions)
             
-            # How many quizzes get an extra question
-            extra_questions = bank_size % num_quizzes
-            
-            # Assign questions to quizzes
-            question_index = 0
+            # Distribute questions across quizzes
             for i in range(num_quizzes):
                 quiz = Quiz(f"Quiz {i+1}")
                 
-                # Determine if this quiz gets an extra question
-                quiz_question_count = base_questions_per_quiz
-                if i < extra_questions:
-                    quiz_question_count += 1
-                    metadata["quizzes_with_extra_questions"].append(i+1)
+                # Calculate start and end index for this quiz's questions
+                start_idx = i * questions_per_quiz
+                end_idx = min(start_idx + questions_per_quiz, len(selected_questions))
                 
-                # Assign questions to this quiz
-                for _ in range(quiz_question_count):
-                    if question_index < len(all_questions):
-                        quiz.add_question(all_questions[question_index])
-                        question_index += 1
+                # If we reach the end of available questions, we won't have a full quiz
+                if start_idx >= len(selected_questions):
+                    break
+                
+                # Add the questions to this quiz
+                for j in range(start_idx, end_idx):
+                    quiz.add_question(selected_questions[j])
                 
                 quizzes.append(quiz)
-            
-            metadata["total_questions_used"] = bank_size
         
         # Create output directory if it doesn't exist
         if not os.path.exists(output_dir):
