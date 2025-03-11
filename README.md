@@ -1,6 +1,6 @@
 # Quiz Randomizer Tool
 
-A tool for educators to create randomized quizzes from a question bank.
+A tool for L2Winners to create randomized quizzes from a question bank.
 
 ## Features
 
@@ -49,13 +49,9 @@ The tool supports loading questions from:
 
 Questions should be formatted with:
 - Questions as regular text
-- Options labeled as a), b), c), etc.
+- Options labeled as a), b), c), or 1), 2) 3) etc.
 - (Optional) Answer feedback labeled as "Answer Feedback: [text]"
 
 ## Support
 
-If you encounter any issues, please submit them on the GitHub Issues page.
-
-## License
-
-This software is provided as-is under the MIT License. 
+If you encounter any issues, please submit them to Jack Turner on Slack.
