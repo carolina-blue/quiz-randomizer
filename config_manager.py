@@ -1,12 +1,23 @@
 import yaml
 import os
+import sys
 from typing import Dict, Any, List
+
+# Helper function to locate resources when packaged with PyInstaller
+def resource_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(os.path.dirname(__file__))
+    return os.path.join(base_path, relative_path)
 
 class ConfigManager:
     """Manages configuration settings for the Quiz Randomizer application."""
     
     def __init__(self, config_file: str = "config.yaml"):
-        self.config_file = config_file
+        self.config_file = resource_path(config_file)
         self.config = self._load_config()
     
     def _load_config(self) -> Dict[str, Any]:

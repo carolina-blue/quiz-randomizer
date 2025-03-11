@@ -15,13 +15,23 @@ from striprtf.striprtf import rtf_to_text
 from bold_formatter import create_quiz_from_docx
 from config_manager import ConfigManager
 
+# Helper function to locate resources when packaged with PyInstaller
+def resource_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(os.path.dirname(__file__))
+    return os.path.join(base_path, relative_path)
+
 # Custom FPDF class with UTF-8 support
 class UTF8PDF(FPDF):
     def __init__(self):
         super().__init__()
         # Set up the default font that supports extended characters
-        self.add_font('DejaVu', '', 'DejaVuSansCondensed.ttf', uni=True)
-        self.add_font('DejaVu', 'B', 'DejaVuSansCondensed-Bold.ttf', uni=True)
+        self.add_font('DejaVu', '', resource_path('DejaVuSansCondensed.ttf'), uni=True)
+        self.add_font('DejaVu', 'B', resource_path('DejaVuSansCondensed-Bold.ttf'), uni=True)
     
     def sanitize_text(self, text):
         """Sanitize text to avoid encoding issues"""

@@ -1,3 +1,19 @@
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Generated quiz files
+quizzes/*.docx
+quizzes/*.pdf
+quizzes/*.txt
+
+# Test files
+test_formatting.docx
+
+# Python cache files
 __pycache__/
 *.py[cod]
 *.class
