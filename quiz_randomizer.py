@@ -771,6 +771,10 @@ class SimpleQuizRandomizerGUI:
         ttk.Label(options_frame, text="Output directory:").grid(row=1, column=2, sticky="w", padx=5, pady=5)
         ttk.Entry(options_frame, textvariable=self.output_dir_var, width=10).grid(row=1, column=3, padx=5, pady=5)
         
+        # Add browse button for output directory
+        browse_output_btn = ttk.Button(options_frame, text="Browse...", command=self.browse_output_dir)
+        browse_output_btn.grid(row=1, column=4, padx=5, pady=5)
+        
         # Allow duplicates
         self.allow_duplicates_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -806,6 +810,15 @@ class SimpleQuizRandomizerGUI:
         )
         if filename:
             self.file_var.set(filename)
+    
+    def browse_output_dir(self):
+        directory = filedialog.askdirectory(
+            title="Select Output Directory",
+            initialdir=self.output_dir_var.get() if self.output_dir_var.get() else "."
+        )
+        if directory:
+            self.output_dir_var.set(directory)
+            self.log_message(f"Output directory set to: {directory}")
     
     def log_message(self, message):
         self.log_text.insert(tk.END, message + "\n")
